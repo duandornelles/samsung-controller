@@ -568,3 +568,36 @@ async def test_power_rediscovery_capped_by_remaining_time(monkeypatch):
     with pytest.raises(TVUnreachable):
         await asyncio.wait_for(h.svc.send_key("power"), 2)
     assert h.finder_calls == [MAC]
+
+
+# -- M5: desligar nunca religa -------------------------------------------------
+
+
+async def test_power_off_retry_never_sends_wol():
+    # O hold falhou (TV derrubou a conexão ao desligar); a redescoberta acha um IP
+    # novo e a TV em standby: o retry não pode mandar WOL (religaria a TV).
+    h = Harness()
+    h.local.powers = ["on", "standby"]
+    h.local.errors = [TVUnreachable("caiu")]
+    h.finder_result = (TVCandidate("10.0.0.9", "[TV] Frame"), MAC)
+    assert await h.svc.send_key("power") == "remote"
+    assert h.wol_calls == []
+    assert h.local.calls.count(("hold", "KEY_POWER", 3.0)) == 1
+
+
+async def test_power_off_retry_unreachable_never_sends_wol():
+    h = Harness()
+    h.local.powers = ["on", None]
+    h.local.errors = [TVUnreachable("caiu")]
+    h.finder_result = (TVCandidate("10.0.0.9", "[TV] Frame"), MAC)
+    assert await h.svc.send_key("power") == "remote"
+    assert h.wol_calls == [] and h.sleeps == []
+
+
+async def test_power_off_retry_still_on_holds_again():
+    h = Harness()
+    h.local.errors = [TVUnreachable("press não chegou")]
+    h.finder_result = (TVCandidate("10.0.0.9", "[TV] Frame"), MAC)
+    assert await h.svc.send_key("power") == "remote"
+    assert h.local.calls.count(("hold", "KEY_POWER", 3.0)) == 2
+    assert h.wol_calls == []

@@ -104,6 +104,7 @@ class _PowerOp:
 
     deadline: float
     woke: bool = False  # WOL já enviado
+    off_attempted: bool = False  # KEY_POWER segurado: um retry nunca manda WOL
 
 
 class TVService:
@@ -292,7 +293,11 @@ class TVService:
             if op.woke:
                 return "wol"
             # Na Frame um toque curto entra no Modo Arte; segurar 3 s desliga.
+            op.off_attempted = True
             await self._local.hold("KEY_POWER", HOLD_POWER_S)
+            return "remote"
+        if op.off_attempted:
+            # Retry de um desligamento: a TV já não está ligada; WOL a religaria.
             return "remote"
         if op.woke:
             wait_until = op.deadline

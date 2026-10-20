@@ -261,16 +261,36 @@ async def test_hold_cancelled_during_sleep_still_releases():
     assert ws.remote_cmds() == [("Press", "KEY_POWER"), ("Release", "KEY_POWER")]
 
 
-async def test_hold_release_fails_drops_socket_and_raises():
+async def test_hold_release_fails_drops_socket_without_raising():
+    # A TV derruba o WebSocket ao desligar: o press já foi entregue e fechar o
+    # socket solta a tecla, então a operação é um sucesso (não pode virar retry).
     ws = FakeWsFactory()
 
     async def failing_sleep(s):
         ws.send_errors = [OSError("broken")]
 
     ch, *_ = make(ws=ws, sleep=failing_sleep)
+    await ch.hold("KEY_POWER", 3)
+    assert ws.created[0].closed and not ch.connected
+
+
+async def test_hold_socket_gone_before_release_does_not_raise():
+    ws = FakeWsFactory()
+
+    async def tv_drops(s):
+        ws.created[0].closed = True
+
+    ch, *_ = make(ws=ws, sleep=tv_drops)
+    await ch.hold("KEY_POWER", 3)
+    assert ws.remote_cmds() == [("Press", "KEY_POWER")] and not ch.connected
+
+
+async def test_hold_press_failure_still_raises():
+    ws = FakeWsFactory()
+    ws.send_errors = [OSError("x"), OSError("y")]
+    ch, *_ = make(ws=ws)
     with pytest.raises(TVUnreachable):
         await ch.hold("KEY_POWER", 3)
-    assert ws.created[0].closed and not ch.connected
 
 
 def test_samsungtvws_logger_pinned_to_warning():

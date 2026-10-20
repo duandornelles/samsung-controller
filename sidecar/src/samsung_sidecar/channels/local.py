@@ -292,28 +292,26 @@ class LocalChannel:
         # Sob o lock inteiro: nenhuma outra tecla entra entre press e release.
         # O release roda num finally blindado: cancelar durante a espera não pode deixar
         # a tecla pressionada com o socket aberto.
+        # Depois que o press foi entregue, falhar no release não é erro: a TV costuma
+        # derrubar o WebSocket ao desligar, e fechar o socket já solta a tecla.
+        # Levantar aqui faria o serviço redescobrir e repetir (e religar a TV).
         async with self._lock:
             await self._send_locked([SendRemoteKey.press(samsung_key)])
-            released = False
             try:
                 await self._sleep(seconds)
             finally:
-                released = await asyncio.shield(self._release_locked(samsung_key))
-            if not released:
-                raise TVUnreachable(_UNREACHABLE_MSG)
+                await asyncio.shield(self._release_locked(samsung_key))
 
-    async def _release_locked(self, samsung_key: str) -> bool:
+    async def _release_locked(self, samsung_key: str) -> None:
         """Release no socket atual; sem socket a TV já descartou o press. Nunca levanta."""
         if not self.connected:
             await self._drop_remote()
-            return False
+            return
         assert self._remote is not None
         try:
             await self._remote.send_commands([SendRemoteKey.release(samsung_key)], key_press_delay=0)
-            return True
         except Exception:
             await self._drop_remote()  # fechar o socket faz a TV soltar a tecla
-            return False
 
     async def run_app(self, app_id: str) -> None:
         await self._send(ChannelEmitCommand.launch_app(app_id, "DEEP_LINK"))
