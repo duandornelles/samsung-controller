@@ -36,9 +36,12 @@ class FakeLocal:
         self.errors: list[BaseException] = []  # levantados por key/run_app/... em ordem
         self.connect_token: str | None = None
         self.closed = False
+        self.power_hook = None
 
     async def power_state(self):
         self.calls.append(("power_state",))
+        if self.power_hook is not None:
+            await self.power_hook()
         return self.powers.pop(0) if len(self.powers) > 1 else self.powers[0]
 
     async def mac(self):
@@ -63,6 +66,11 @@ class FakeLocal:
     async def open_browser(self, url):
         self.calls.append(("open_browser", url))
         self._maybe_fail()
+
+    async def reset_token(self):
+        self.calls.append(("reset_token",))
+        self.token = None
+        self.connected = False
 
     async def connect(self):
         self.calls.append(("connect",))
@@ -573,3 +581,49 @@ async def test_state_smartthings_slow_is_capped(monkeypatch):
     state = await h.svc.state()
     assert state["power"] == "on" and state["volume"] is None and state["app"] is None
     assert state["channels"]["adb"] is False
+
+
+async def test_power_wol_then_rediscovery_does_not_turn_tv_off():
+    # IP mudou: WOL acorda a TV, mas o IP antigo nunca responde; a redescoberta
+    # acha o IP novo e a TV já está ligada -> não pode segurar KEY_POWER.
+    h = Harness()
+    h.local.powers = [None] * 16 + ["on"]
+    h.finder_result = (TVCandidate("10.0.0.9", "[TV] Frame"), MAC)
+    assert await h.svc.send_key("power") == "wol"
+    assert h.wol_calls == [MAC]
+    assert not any(c[0] == "hold" for c in h.local.calls)
+    assert h.config.tv_host == "10.0.0.9"
+
+
+async def test_start_pairing_forces_tokenless_connect():
+    h = Harness(ws_token="stale")
+    h.local.connect_token = "fresh"
+    await h.svc.start_pairing()
+    assert h.local.calls[:2] == [("reset_token",), ("connect",)]
+    assert h.config.ws_token == "fresh" and h.saved[-1].ws_token == "fresh"
+
+
+async def test_start_pairing_failure_leaves_no_token():
+    h = Harness(ws_token="stale")
+    h.local.errors = [AdbUnauthorized("expirou")]
+    with pytest.raises(AdbUnauthorized):
+        await h.svc.start_pairing()
+    assert h.config.ws_token is None and h.saved[-1].ws_token is None
+    with pytest.raises(NotPaired):
+        await h.svc.finish_pairing("0000")
+
+
+async def test_state_power_probe_is_capped(monkeypatch):
+    import asyncio
+
+    from samsung_sidecar import service
+
+    monkeypatch.setattr(service, "STATE_POWER_TIMEOUT_S", 0.05)
+    h = Harness()
+
+    async def hang():
+        await asyncio.Event().wait()
+
+    h.local.power_hook = hang
+    state = await asyncio.wait_for(h.svc.state(), 1.0)
+    assert state["power"] == "standby" and state["volume"] is None

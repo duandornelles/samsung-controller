@@ -271,6 +271,12 @@ class LocalChannel:
         async with self._lock:
             await self._send_locked(list(commands))
 
+    async def reset_token(self) -> None:
+        """Esquece o token e fecha o socket: o próximo connect pede "Permitir" (30 s)."""
+        async with self._lock:
+            await self._drop_remote()
+            self._token = None
+
     async def connect(self) -> None:
         """Abre o WebSocket sem enviar nada (sem token: aguarda o "Permitir" na TV)."""
         async with self._lock:

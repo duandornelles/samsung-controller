@@ -364,3 +364,20 @@ async def test_connect_unreachable():
     with pytest.raises(TVUnreachable):
         await ch.connect()
     assert not ch.connected
+
+
+async def test_reset_token_drops_socket_and_next_connect_pairs():
+    ws = FakeWsFactory(issue_token="new")
+    ch, _, ws, tokens = make(token="stale", ws=ws)
+    await ch.connect()
+    old = ws.created[-1]
+    await ch.reset_token()
+    assert old.closed and not ch.connected
+    ws.block_open = True
+    task = asyncio.ensure_future(ch.connect())
+    await asyncio.sleep(0.01)
+    assert ch.pairing_pending and ws.created[-1].token is None
+    ws.block_open = False
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

@@ -40,6 +40,7 @@ WOL_WAIT_S = 15.0
 INPUT_CONFIRM_S = 5.0
 PICTURE_CONFIRM_S = 5.0
 HOLD_POWER_S = 3.0
+STATE_POWER_TIMEOUT_S = 2.0  # teto do REST de energia dentro do /state
 STATE_ST_TIMEOUT_S = 2.5  # teto do SmartThings dentro do /state
 
 # Sentinela que o app usa para "a TV está mostrando uma entrada" (herdada do TCL).
@@ -64,6 +65,7 @@ class Local(Protocol):
     async def run_app(self, app_id: str) -> None: ...
     async def open_browser(self, url: str) -> None: ...
     async def connect(self) -> None: ...
+    async def reset_token(self) -> None: ...
     async def set_host(self, host: str) -> None: ...
     async def close(self) -> None: ...
 
@@ -206,8 +208,16 @@ class TVService:
 
     # -- teclas, apps, estado ------------------------------------------------
 
-    async def _power(self) -> str:
+    async def _power(self, woke: list[bool]) -> str:
+        """Liga por WOL ou desliga segurando KEY_POWER.
+
+        ``woke`` sobrevive à repetição do _run: se o WOL já foi enviado nesta
+        operação (ex.: o IP mudou e a redescoberta achou a TV ligando no IP novo),
+        a TV ligada é resultado do WOL e não pode ser desligada.
+        """
         if await self._local.power_state() == "on":
+            if woke[0]:
+                return "wol"
             # Na Frame um toque curto entra no Modo Arte; segurar 3 s desliga.
             await self._local.hold("KEY_POWER", HOLD_POWER_S)
             return "remote"
@@ -215,6 +225,7 @@ class TVService:
         if not mac:
             raise TVUnreachable(_NO_MAC_MSG)
         await self._wol(mac)
+        woke[0] = True
         for _ in range(round(WOL_WAIT_S / POLL_S)):
             await self._sleep(POLL_S)
             if await self._local.power_state() == "on":
@@ -224,7 +235,8 @@ class TVService:
     async def send_key(self, name: str) -> str:
         key = samsung_key(name)
         if key == "KEY_POWER":
-            return await self._run(self._power)
+            woke = [False]
+            return await self._run(lambda: self._power(woke))
 
         async def op() -> str:
             await self._local.key(key)
@@ -269,8 +281,10 @@ class TVService:
         app: str | None = None
         if self._config.tv_host is not None:
             try:
-                power = await self._local.power_state()
-            except Exception:
+                # Teto curto: o REST da TV fora da rede leva ~4-5 s e o app desiste em 5 s.
+                async with asyncio.timeout(STATE_POWER_TIMEOUT_S):
+                    power = await self._local.power_state()
+            except Exception:  # TimeoutError incluso
                 power = None
             if power != "on":
                 power = "standby"
@@ -297,9 +311,19 @@ class TVService:
     # -- pareamento ----------------------------------------------------------
 
     async def start_pairing(self) -> None:
-        """Conecta o WebSocket; sem token a TV mostra "Permitir" e o token é salvo."""
+        """Abre o WebSocket sem token: a TV mostra "Permitir" e o novo token é salvo.
+
+        Sempre sem token (spec §4.2): um token salvo pode ter sido revogado na TV, e
+        conectar com ele usaria o teto de 4 s em vez dos 30 s do pareamento, sem
+        ``adb_auth = "pending"``. O token antigo é descartado também na config, para
+        ``finish_pairing`` não confirmar um pareamento que falhou.
+        """
         if self._config.tv_host is None or self._config.tv_mac is None:
             await self._apply(*await self._find())
+        await self._local.reset_token()
+        if self._config.ws_token is not None:
+            self._config.ws_token = None
+            self._save(self._config)
         await self._local.connect()
 
     async def finish_pairing(self, pin: str) -> None:
