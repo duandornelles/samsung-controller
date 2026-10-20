@@ -16,7 +16,7 @@ from . import discovery
 from .apps import app_for
 from .channels.smartthings import NO_BACKLIGHT_MSG, picture_label
 from .channels.wol import send_magic_packet
-from .config import Config, save_config
+from .config import Config, config_stamp, load_config, save_config
 from .discovery import TVCandidate
 from .errors import (
     InputNotConfirmed,
@@ -51,6 +51,9 @@ _NO_ST_MSG = "Configure o token SmartThings (samsung smartthings <token>)"
 _NO_MAC_MSG = "TV inacessível e sem MAC salvo para ligá-la pela rede"
 _WOL_TIMEOUT_MSG = "A TV não ligou após o Wake-on-LAN"
 _NOT_PAIRED_MSG = "TV não pareada: aceite o pedido de conexão na TV (samsung pair)"
+
+# Campos do config.json que o sidecar grava; st_token/st_device_id são da CLI.
+_OWNED_FIELDS = ("tv_host", "tv_mac", "tv_name", "ws_token")
 
 
 class Local(Protocol):
@@ -102,6 +105,8 @@ class TVService:
         save: Callable[[Config], None] = save_config,
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        load: Callable[[], Config] = load_config,
+        stamp: Callable[[], object] = config_stamp,
     ) -> None:
         self._config = config
         self._local_factory = local_factory
@@ -111,6 +116,9 @@ class TVService:
         self._save = save
         self._sleep = sleep
         self._now = now
+        self._load = load
+        self._stamp = stamp
+        self._seen_stamp = stamp()  # config já lido na partida
         self._local = local_factory(config.tv_host or "", config.ws_token, self._on_token)
         self._st: SmartThings | None = None
         self._st_key: tuple[str, str] | None = None
@@ -120,9 +128,39 @@ class TVService:
 
     # -- persistência / descoberta -------------------------------------------
 
+    def _adopt_disk_st(self, disk: Config) -> None:
+        """Adota st_token/st_device_id do disco quando o par está completo lá."""
+        if disk.st_token and disk.st_device_id:
+            self._config.st_token = disk.st_token
+            self._config.st_device_id = disk.st_device_id
+
+    def _persist(self) -> None:
+        """Grava só os campos do sidecar sobre o config.json atual do disco.
+
+        A CLI ``samsung smartthings`` grava st_token/st_device_id direto no arquivo
+        enquanto o sidecar roda; regravar a cópia da partida apagaria esses campos.
+        """
+        disk = self._load()
+        self._adopt_disk_st(disk)
+        for name in _OWNED_FIELDS:
+            setattr(disk, name, getattr(self._config, name))
+        # Arquivo ausente/ilegível: mantém o par SmartThings que está em memória.
+        disk.st_token = self._config.st_token
+        disk.st_device_id = self._config.st_device_id
+        self._save(disk)
+        self._seen_stamp = self._stamp()
+
+    def _refresh_from_disk(self) -> None:
+        """Relê o config.json se outro processo o alterou (sem reiniciar o sidecar)."""
+        current = self._stamp()
+        if current == self._seen_stamp:
+            return
+        self._seen_stamp = current
+        self._adopt_disk_st(self._load())
+
     def _on_token(self, token: str) -> None:
         self._config.ws_token = token
-        self._save(self._config)
+        self._persist()
 
     async def _get_mac(self, host: str) -> str | None:
         tmp = self._local_factory(host, None, lambda _token: None)
@@ -141,7 +179,7 @@ class TVService:
         self._config.tv_name = cand.name
         if mac:
             self._config.tv_mac = mac
-        self._save(self._config)
+        self._persist()
 
     async def _ensure_host(self) -> bool:
         """Primeiro uso: descobre quando não há host salvo. True se descobriu."""
@@ -170,6 +208,7 @@ class TVService:
     # -- SmartThings ---------------------------------------------------------
 
     def _st_channel(self) -> SmartThings | None:
+        self._refresh_from_disk()
         token, device = self._config.st_token, self._config.st_device_id
         if not token or not device:
             return None
@@ -323,7 +362,7 @@ class TVService:
         await self._local.reset_token()
         if self._config.ws_token is not None:
             self._config.ws_token = None
-            self._save(self._config)
+            self._persist()
         await self._local.connect()
 
     async def finish_pairing(self, pin: str) -> None:

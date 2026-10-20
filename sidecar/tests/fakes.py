@@ -276,16 +276,33 @@ class Harness:
             MAC,
         )
         self.st_setup = lambda st: None
+        # "Disco" falso: o config.json que a CLI `samsung smartthings` também grava.
+        self.disk = Config(**vars(self.config))
+        self.disk_stamp = 0
+        self.clock_now = 0.0
         self.svc = TVService(
             self.config,
             self.local_factory,
             self.st_factory,
             wol=self.wol,
             finder=self.finder,
-            save=lambda c: self.saved.append(Config(**vars(c))),
+            save=self.save,
             sleep=self.sleep,
             now=lambda: NOW,
+            load=lambda: Config(**vars(self.disk)),
+            stamp=lambda: self.disk_stamp,
         )
+
+    def save(self, cfg):
+        self.saved.append(Config(**vars(cfg)))
+        self.disk = Config(**vars(cfg))
+        self.disk_stamp += 1
+
+    def cli_write(self, **changes):
+        """Simula outro processo (CLI) gravando o config.json."""
+        for k, v in changes.items():
+            setattr(self.disk, k, v)
+        self.disk_stamp += 1
 
     def local_factory(self, host, token, on_token):
         loc = FakeLocal(host, token, on_token)
@@ -318,3 +335,4 @@ class Harness:
 
     async def sleep(self, s):
         self.sleeps.append(s)
+        self.clock_now += s

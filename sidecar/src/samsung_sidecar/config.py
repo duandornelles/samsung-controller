@@ -40,6 +40,19 @@ def load_config() -> Config:
     return Config(**{k: v for k, v in data.items() if k in known})
 
 
+def config_stamp() -> tuple[int, int, int] | None:
+    """Assinatura de config.json (mtime, inode, tamanho); None se ausente.
+
+    Muda a cada gravação atômica (os.replace troca o inode), inclusive por outro
+    processo como a CLI ``samsung smartthings``.
+    """
+    try:
+        st = (data_dir() / "config.json").stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_ino, st.st_size)
+
+
 def save_config(cfg: Config) -> None:
     """Grava config.json de forma atômica com permissão 0o600."""
     path = data_dir() / "config.json"

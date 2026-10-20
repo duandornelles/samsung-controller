@@ -446,3 +446,57 @@ async def test_state_power_probe_is_capped(monkeypatch):
     h.local.power_hook = hang
     state = await asyncio.wait_for(h.svc.state(), 1.0)
     assert state["power"] == "standby" and state["volume"] is None
+
+
+# -- I1: token SmartThings gravado pela CLI com o sidecar rodando ---------------
+
+
+async def test_cli_smartthings_write_picked_up_without_restart():
+    h = Harness(st=False)
+    with pytest.raises(NotSupported):
+        await h.svc.inputs()
+    h.cli_write(st_token="pat2", st_device_id="dev2")
+    assert [i["port"] for i in await h.svc.inputs()] == [1, 2]
+    assert (h.st.token, h.st.device_id) == ("pat2", "dev2")
+    assert (await h.svc.health())["channels"]["adb"] is True
+
+
+async def test_sidecar_save_preserves_cli_smartthings_fields():
+    h = Harness(st=False, ws_token=None)
+    h.cli_write(st_token="pat2", st_device_id="dev2")
+    # Salvamentos do sidecar (token novo, redescoberta) sem ler /inputs antes.
+    h.svc._on_token("newtok")
+    assert (h.disk.st_token, h.disk.st_device_id, h.disk.ws_token) == ("pat2", "dev2", "newtok")
+    h.local.errors = [TVUnreachable("x")]
+    h.finder_result = (TVCandidate("10.0.0.9", "[TV] Frame"), MAC)
+    await h.svc.send_key("home")
+    assert (h.disk.st_token, h.disk.st_device_id, h.disk.tv_host) == ("pat2", "dev2", "10.0.0.9")
+
+
+async def test_sidecar_save_keeps_owned_fields_from_memory():
+    h = Harness()
+    h.cli_write(tv_host="1.2.3.4", ws_token="alheio")
+    h.svc._on_token("meu")
+    assert (h.disk.tv_host, h.disk.ws_token) == ("10.0.0.5", "meu")
+
+
+async def test_real_disk_cli_write_then_sidecar_save(home):
+    from samsung_sidecar.config import load_config, save_config
+
+    save_config(Config(tv_host="10.0.0.5", tv_mac=MAC, ws_token="tok"))
+    sts: list[FakeST] = []
+
+    def st_factory(token, device):
+        sts.append(FakeST(token, device))
+        return sts[-1]
+
+    svc = TVService(load_config(), FakeLocal, st_factory)
+    with pytest.raises(NotSupported):
+        await svc.inputs()
+    cfg = load_config()  # o que `samsung smartthings` faz
+    cfg.st_token, cfg.st_device_id = "pat", "dev"
+    save_config(cfg)
+    assert [i["port"] for i in await svc.inputs()] == [1, 2]
+    svc._on_token("tok2")
+    disk = load_config()
+    assert (disk.st_token, disk.st_device_id, disk.ws_token) == ("pat", "dev", "tok2")

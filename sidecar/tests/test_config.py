@@ -33,3 +33,14 @@ def test_config_tolerates_garbage(home):
     assert load_config() == Config()
     p.write_text("[1]")
     assert load_config() == Config()
+
+
+def test_config_stamp_changes_on_save(home):
+    from samsung_sidecar.config import config_stamp
+
+    assert config_stamp() is None
+    save_config(Config(tv_host="a"))
+    first = config_stamp()
+    assert first is not None
+    save_config(Config(tv_host="a", st_token="t"))
+    assert config_stamp() != first
