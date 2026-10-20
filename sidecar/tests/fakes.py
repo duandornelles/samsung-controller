@@ -1,7 +1,10 @@
 """Fakes reutilizáveis dos canais (nunca abrem socket)."""
 
 import asyncio
+import json
 from typing import Any
+
+from websockets.protocol import State
 
 
 class FakeRest:
@@ -90,3 +93,39 @@ class FakeWsFactory:
             for c in self.sent
             if c["method"] == "ms.remote.control"
         ]
+
+
+class FakeConnection:
+    """``websockets`` ClientConnection falso: aberto pelo connect(), ainda não
+    atribuído a ``remote.connection`` enquanto o laço de ``ms.channel.connect`` roda.
+    Sem mensagens na fila, ``recv()`` bloqueia (TV mostrando "Permitir")."""
+
+    def __init__(self, messages: list[dict[str, Any]] | None = None):
+        self.messages = list(messages or [])
+        self.closed = False
+        self.state = State.OPEN
+        self.sent: list[str] = []
+
+    async def recv(self) -> str:
+        if not self.messages:
+            await asyncio.Event().wait()
+        return json.dumps(self.messages.pop(0))
+
+    async def send(self, payload: str) -> None:
+        self.sent.append(payload)
+
+    async def close(self) -> None:
+        self.closed = True
+        self.state = State.CLOSED
+
+
+class FakeConnect:
+    """Substitui ``websockets.asyncio.client.connect`` no módulo do canal."""
+
+    def __init__(self, *conns: FakeConnection):
+        self.conns = list(conns)
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def __call__(self, url: str, **kwargs: Any) -> FakeConnection:
+        self.calls.append((url, kwargs))
+        return self.conns.pop(0)

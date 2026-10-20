@@ -6,6 +6,7 @@ fábrica injetável, para que os testes nunca abram socket.
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal, Protocol
 
@@ -14,8 +15,15 @@ from samsungtvws.async_remote import SamsungTVWSAsyncRemote
 from samsungtvws.async_rest import SamsungTVAsyncRest
 from samsungtvws.command import SamsungTVCommand
 from samsungtvws.connection import SamsungTVWSBaseConnection
-from samsungtvws.exceptions import UnauthorizedError
+from samsungtvws import helper
+from samsungtvws.event import (
+    IGNORE_EVENTS_AT_STARTUP,
+    MS_CHANNEL_CONNECT_EVENT,
+    MS_CHANNEL_UNAUTHORIZED,
+)
+from samsungtvws.exceptions import ConnectionFailure, UnauthorizedError
 from samsungtvws.remote import ChannelEmitCommand, SendRemoteKey
+from websockets.asyncio.client import ClientConnection, connect
 
 from samsung_sidecar.errors import AdbUnauthorized, TVUnreachable
 
@@ -27,6 +35,10 @@ BROWSER_APP_ID = "org.tizen.browser"
 _UNREACHABLE_MSG = "TV inacessível (API local)"
 _PAIRING_TIMEOUT_MSG = "Aceite o pedido de conexão na TV"
 _DENIED_MSG = "Pedido de conexão recusado na TV"
+
+# Nunca logar tokens: a lib loga o token em INFO (connection.py:95) e a URL com o
+# token em DEBUG (async_connection.py:56).
+logging.getLogger("samsungtvws").setLevel(logging.WARNING)
 
 
 class RestClient(Protocol):
@@ -68,10 +80,51 @@ def default_rest_factory(host: str, timeout: float) -> _AioRest:
     return _AioRest(host, timeout)
 
 
+class _ClosingAsyncRemote(SamsungTVWSAsyncRemote):
+    """``SamsungTVWSAsyncRemote`` cujo ``open()`` fecha o socket se a conexão falhar.
+
+    Na lib (3.0.6, async_connection.py:47-79) o ``ClientConnection`` é local e só vai
+    para ``self.connection`` após ``ms.channel.connect``; cancelamento (timeout do
+    "Permitir"), ``ms.channel.unauthorized`` ou evento inesperado deixam o socket
+    aberto, pois ``close()`` só age ``if self.connection``. Mesma lógica, com limpeza.
+    """
+
+    async def open(self) -> ClientConnection:
+        if self.connection:
+            return self.connection
+        kwargs: dict[str, Any] = {}
+        if self._is_ssl_connection():
+            kwargs["ssl"] = helper.get_ssl_context()
+        conn = await connect(
+            self._format_websocket_url(self.endpoint),
+            open_timeout=self.timeout,
+            close_timeout=self.timeout,
+            **kwargs,
+        )
+        try:
+            event: str | None = None
+            response: dict[str, Any] = {}
+            while event is None or event in IGNORE_EVENTS_AT_STARTUP:
+                response = helper.process_api_response(await conn.recv())
+                event = response.get("event", "*")
+                self._websocket_event(event, response)
+            if event == MS_CHANNEL_UNAUTHORIZED:
+                raise UnauthorizedError(response)
+            if event != MS_CHANNEL_CONNECT_EVENT:
+                raise ConnectionFailure(response)
+            self._check_for_token(response)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await conn.close()
+            raise
+        self.connection = conn
+        return conn
+
+
 def default_ws_factory(host: str, token: str | None, timeout: float) -> SamsungTVWSAsyncRemote:
     # timeout = open_timeout do websockets (TCP + TLS + handshake), não a espera do "Permitir".
     # key_press_delay=0: a lib dorme esse tempo após cada envio (padrão 1 s).
-    return SamsungTVWSAsyncRemote(
+    return _ClosingAsyncRemote(
         host, token=token, port=WS_PORT, timeout=timeout, key_press_delay=0, name=CLIENT_NAME
     )
 
@@ -223,10 +276,30 @@ class LocalChannel:
 
     async def hold(self, samsung_key: str, seconds: float) -> None:
         # Sob o lock inteiro: nenhuma outra tecla entra entre press e release.
+        # O release roda num finally blindado: cancelar durante a espera não pode deixar
+        # a tecla pressionada com o socket aberto.
         async with self._lock:
             await self._send_locked([SendRemoteKey.press(samsung_key)])
-            await self._sleep(seconds)
-            await self._send_locked([SendRemoteKey.release(samsung_key)])
+            released = False
+            try:
+                await self._sleep(seconds)
+            finally:
+                released = await asyncio.shield(self._release_locked(samsung_key))
+            if not released:
+                raise TVUnreachable(_UNREACHABLE_MSG)
+
+    async def _release_locked(self, samsung_key: str) -> bool:
+        """Release no socket atual; sem socket a TV já descartou o press. Nunca levanta."""
+        if not self.connected:
+            await self._drop_remote()
+            return False
+        assert self._remote is not None
+        try:
+            await self._remote.send_commands([SendRemoteKey.release(samsung_key)], key_press_delay=0)
+            return True
+        except Exception:
+            await self._drop_remote()  # fechar o socket faz a TV soltar a tecla
+            return False
 
     async def run_app(self, app_id: str) -> None:
         await self._send(ChannelEmitCommand.launch_app(app_id, "DEEP_LINK"))

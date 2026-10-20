@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 
 import pytest
@@ -8,7 +9,9 @@ from websockets.exceptions import ConnectionClosedError
 from samsung_sidecar.channels.local import LocalChannel, default_rest_factory, default_ws_factory
 from samsung_sidecar.errors import AdbUnauthorized, TVUnreachable
 
-from fakes import FakeRest, FakeRestFactory, FakeWsFactory
+from fakes import FakeConnect, FakeConnection, FakeRest, FakeRestFactory, FakeWsFactory
+
+from samsung_sidecar.channels import local
 
 
 def make(token="tok", rest=None, ws=None, **kw):
@@ -239,3 +242,108 @@ def test_default_ws_factory_url_without_token():
 def test_default_rest_factory_url():
     rest = default_rest_factory("10.0.0.5", 4.0)
     assert rest.url == "http://10.0.0.5:8001/api/v2/"
+
+
+async def test_hold_cancelled_during_sleep_still_releases():
+    ws = FakeWsFactory()
+    sleeping = asyncio.Event()
+
+    async def blocking_sleep(s):
+        sleeping.set()
+        await asyncio.Event().wait()
+
+    ch, *_ = make(ws=ws, sleep=blocking_sleep)
+    task = asyncio.create_task(ch.hold("KEY_POWER", 3))
+    await sleeping.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert ws.remote_cmds() == [("Press", "KEY_POWER"), ("Release", "KEY_POWER")]
+
+
+async def test_hold_release_fails_drops_socket_and_raises():
+    ws = FakeWsFactory()
+
+    async def failing_sleep(s):
+        ws.send_errors = [OSError("broken")]
+
+    ch, *_ = make(ws=ws, sleep=failing_sleep)
+    with pytest.raises(TVUnreachable):
+        await ch.hold("KEY_POWER", 3)
+    assert ws.created[0].closed and not ch.connected
+
+
+def test_samsungtvws_logger_pinned_to_warning():
+    assert logging.getLogger("samsungtvws").level == logging.WARNING
+
+
+CONNECT_OK = {"event": "ms.channel.connect", "data": {"token": "newtok"}}
+
+
+async def test_real_remote_open_success_assigns_connection(monkeypatch):
+    conn = FakeConnection([{"event": "ms.voiceApp.hide"}, CONNECT_OK])
+    fake_connect = FakeConnect(conn)
+    monkeypatch.setattr(local, "connect", fake_connect)
+    remote = default_ws_factory("10.0.0.5", None, 4.0)
+    assert await remote.open() is conn
+    assert remote.connection is conn and remote.token == "newtok" and not conn.closed
+    url, kwargs = fake_connect.calls[0]
+    assert url.startswith("wss://10.0.0.5:8002/") and "token=" not in url
+    assert kwargs["open_timeout"] == 4.0 and "ssl" in kwargs
+
+
+async def test_real_remote_pairing_timeout_closes_socket(monkeypatch):
+    conn = FakeConnection()  # "Permitir" nunca respondido
+    monkeypatch.setattr(local, "connect", FakeConnect(conn))
+    ch = LocalChannel("10.0.0.5", None, lambda t: None, pairing_timeout_s=0.1)
+    with pytest.raises(AdbUnauthorized):
+        await ch.key("KEY_HOME")
+    assert conn.closed and not ch.connected and not ch.pairing_pending
+
+
+async def test_real_remote_stale_token_timeout_closes_socket(monkeypatch):
+    conn = FakeConnection()
+    monkeypatch.setattr(local, "connect", FakeConnect(conn))
+    ch = LocalChannel("10.0.0.5", "old", lambda t: None, connect_timeout_s=0.1)
+    with pytest.raises(TVUnreachable):
+        await ch.key("KEY_HOME")
+    assert conn.closed
+
+
+async def test_real_remote_cancel_closes_socket(monkeypatch):
+    conn = FakeConnection()
+    monkeypatch.setattr(local, "connect", FakeConnect(conn))
+    ch = LocalChannel("10.0.0.5", None, lambda t: None)
+    task = asyncio.create_task(ch.key("KEY_HOME"))
+    while not ch.pairing_pending:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert conn.closed and not ch.pairing_pending
+
+
+@pytest.mark.parametrize(
+    "event, exc",
+    [("ms.channel.unauthorized", AdbUnauthorized), ("ms.error", TVUnreachable)],
+)
+async def test_real_remote_rejected_closes_socket(monkeypatch, event, exc):
+    conn = FakeConnection([{"event": event, "data": {}}])
+    monkeypatch.setattr(local, "connect", FakeConnect(conn))
+    ch = LocalChannel("10.0.0.5", None, lambda t: None)
+    with pytest.raises(exc):
+        await ch.key("KEY_HOME")
+    assert conn.closed and not ch.connected
+
+
+async def test_real_remote_token_flow_and_key(monkeypatch):
+    conn = FakeConnection([CONNECT_OK])
+    monkeypatch.setattr(local, "connect", FakeConnect(conn))
+    tokens: list[str] = []
+    ch = LocalChannel("10.0.0.5", None, tokens.append)
+    await ch.key("KEY_HOME")
+    assert tokens == ["newtok"] and len(conn.sent) == 1 and '"KEY_HOME"' in conn.sent[0]
+    assert ch.connected
+    await ch.close()
+    assert conn.closed and not ch.connected
