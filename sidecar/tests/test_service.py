@@ -628,3 +628,36 @@ async def test_concurrent_power_presses_hold_once():
     assert loc.calls.count(("hold", "KEY_POWER", 3.0)) == 1
     # O 2º pedido releu o estado depois do 1º: TV em standby -> WOL.
     assert results == ["remote", "wol"] and h.wol_calls == [MAC]
+
+
+# -- M9: MAC inválido ----------------------------------------------------------
+
+
+async def test_invalid_mac_from_tv_is_not_saved():
+    h = Harness(tv_host=None, tv_mac=None)
+    h.finder_result = (TVCandidate("10.0.0.7", "[TV] Frame"), "lixo")
+    await h.svc.send_key("home")
+    assert h.config.tv_mac is None and h.disk.tv_mac is None
+    assert h.config.tv_host == "10.0.0.7"
+
+
+async def test_invalid_saved_mac_maps_to_unreachable():
+    from samsung_sidecar.channels.wol import magic_packet
+
+    h = Harness(tv_mac="lixo")
+    h.local.powers = ["standby"]
+    h.finder_result = TVNotFound("x")
+
+    async def wol(mac):
+        magic_packet(mac)  # o send_magic_packet real valida assim
+
+    h.svc._wol = wol
+    with pytest.raises(TVUnreachable, match="MAC da TV inválido"):
+        await h.svc.send_key("power")
+
+
+async def test_pairing_rediscovers_when_saved_mac_invalid():
+    h = Harness(tv_mac="lixo")
+    await h.svc.start_pairing()
+    assert h.finder_calls == ["lixo"]
+    assert h.config.tv_mac == MAC

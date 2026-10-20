@@ -10,6 +10,10 @@ Sender = Callable[[bytes, tuple[str, int]], Awaitable[None]]
 _MAC_RE = re.compile(r"^[0-9a-fA-F]{2}([:-][0-9a-fA-F]{2}){5}$")
 
 
+def valid_mac(mac: str | None) -> bool:
+    return bool(mac) and _MAC_RE.match(mac) is not None
+
+
 def magic_packet(mac: str) -> bytes:
     if not _MAC_RE.match(mac):
         raise ValueError(f"MAC inválido: {mac!r}")

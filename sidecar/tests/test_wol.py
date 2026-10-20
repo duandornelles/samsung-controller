@@ -28,3 +28,10 @@ async def test_send_magic_packet_uses_sender():
     await send_magic_packet("AA:BB:CC:DD:EE:FF", sender=sender)
     pkt = magic_packet("AA:BB:CC:DD:EE:FF")
     assert calls == [(pkt, ("255.255.255.255", 9)), (pkt, ("255.255.255.255", 7))]
+
+
+def test_valid_mac():
+    from samsung_sidecar.channels.wol import valid_mac
+
+    assert valid_mac("AA:BB:CC:DD:EE:FF") and valid_mac("aa-bb-cc-dd-ee-ff")
+    assert not valid_mac("") and not valid_mac("zz") and not valid_mac(None)

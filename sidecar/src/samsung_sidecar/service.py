@@ -17,7 +17,7 @@ from typing import Any, Protocol, TypeVar
 from . import discovery
 from .apps import app_for
 from .channels.smartthings import NO_BACKLIGHT_MSG, picture_label
-from .channels.wol import send_magic_packet
+from .channels.wol import send_magic_packet, valid_mac
 from .config import Config, config_stamp, load_config, save_config
 from .discovery import TVCandidate
 from .errors import (
@@ -54,6 +54,7 @@ _HDMI_RE = re.compile(r"^HDMI(\d+)$")
 _NO_ST_MSG = "Configure o token SmartThings (samsung smartthings <token>)"
 _NO_MAC_MSG = "TV inacessível e sem MAC salvo para ligá-la pela rede"
 _WOL_TIMEOUT_MSG = "A TV não ligou após o Wake-on-LAN"
+_BAD_MAC_MSG = "MAC da TV inválido; rode a descoberta novamente"
 _NOT_PAIRED_MSG = "TV não pareada: aceite o pedido de conexão na TV (samsung pair)"
 
 # Campos do config.json que o sidecar grava; st_token/st_device_id são da CLI.
@@ -193,7 +194,7 @@ class TVService:
             await self._local.set_host(cand.host)
         self._config.tv_host = cand.host
         self._config.tv_name = cand.name
-        if mac:
+        if valid_mac(mac):  # wifiMac malformado vindo da TV é ignorado
             self._config.tv_mac = mac
         self._persist()
 
@@ -306,7 +307,10 @@ class TVService:
             mac = self._config.tv_mac
             if not mac:
                 raise TVUnreachable(_NO_MAC_MSG)
-            await self._wol(mac)
+            try:
+                await self._wol(mac)
+            except ValueError as exc:  # MAC malformado no config.json
+                raise TVUnreachable(_BAD_MAC_MSG) from exc
             op.woke = True
             wait_until = min(self._clock() + WOL_WAIT_S, op.deadline)
         while self._clock() < wait_until:
@@ -406,7 +410,7 @@ class TVService:
         ``adb_auth = "pending"``. O token antigo é descartado também na config, para
         ``finish_pairing`` não confirmar um pareamento que falhou.
         """
-        if self._config.tv_host is None or self._config.tv_mac is None:
+        if self._config.tv_host is None or not valid_mac(self._config.tv_mac):
             await self._apply(*await self._find())
         await self._local.reset_token()
         if self._config.ws_token is not None:
