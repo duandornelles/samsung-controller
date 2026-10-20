@@ -1,0 +1,1 @@
+{"deviceId":"dev-1","name":"Samsung Frame","label":"Frame","deviceTypeName":"Samsung OCF TV","components":[{"id":"main","capabilities":[{"id":"switch","version":1},{"id":"mediaInputSource","version":1},{"id":"custom.picturemode","version":1},{"id":"audioVolume","version":1},{"id":"audioMute","version":1}]}]}
