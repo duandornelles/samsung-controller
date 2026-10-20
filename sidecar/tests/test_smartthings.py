@@ -169,3 +169,21 @@ async def test_auth_header_and_no_token_in_errors():
 async def test_list_devices():
     t = httpx.MockTransport(lambda r: httpx.Response(200, json={"items": [DEVICE]}))
     assert await SmartThingsChannel.list_devices(TOKEN, transport=t) == [DEVICE]
+
+
+@pytest.mark.parametrize(
+    "code,exc,msg",
+    [
+        (401, NotSupported, "Token SmartThings inválido"),
+        (403, NotSupported, "Token SmartThings sem permissão ou inválido"),
+        (404, NotSupported, "Dispositivo SmartThings não encontrado"),
+        (422, NotSupported, r"SmartThings recusou o comando \(HTTP 422\)"),
+        (408, TVUnreachable, "SmartThings inacessível"),
+        (429, TVUnreachable, "SmartThings inacessível"),
+        (500, TVUnreachable, "SmartThings inacessível"),
+    ],
+)
+async def test_http_status_mapping(code, exc, msg):
+    ch, _ = make(handler=lambda r: httpx.Response(code))
+    with pytest.raises(exc, match=msg):
+        await ch.status()

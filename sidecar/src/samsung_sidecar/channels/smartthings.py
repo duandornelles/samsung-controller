@@ -24,6 +24,8 @@ PICTURE_LABELS: dict[str, str] = {
 }
 
 _UNAUTHORIZED_MSG = "Token SmartThings inválido"
+_FORBIDDEN_MSG = "Token SmartThings sem permissão ou inválido"
+_NOT_FOUND_MSG = "Dispositivo SmartThings não encontrado"
 _UNREACHABLE_MSG = "SmartThings inacessível"
 _NO_BACKLIGHT_MSG = "Brilho não disponível nesta TV"
 
@@ -33,11 +35,18 @@ def picture_label(value: str) -> str:
 
 
 def _check(resp: httpx.Response) -> httpx.Response:
-    if resp.status_code in (401, 403):
+    code = resp.status_code
+    if code < 400:
+        return resp
+    if code == 401:
         raise NotSupported(_UNAUTHORIZED_MSG)
-    if resp.status_code >= 400:
+    if code == 403:
+        raise NotSupported(_FORBIDDEN_MSG)
+    if code == 404:
+        raise NotSupported(_NOT_FOUND_MSG)
+    if code in (408, 429) or code >= 500:
         raise TVUnreachable(_UNREACHABLE_MSG)
-    return resp
+    raise NotSupported(f"SmartThings recusou o comando (HTTP {code})")
 
 
 async def _request(
