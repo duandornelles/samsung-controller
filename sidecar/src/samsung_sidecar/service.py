@@ -8,7 +8,9 @@ manter o mesmo contrato. Canais: local (REST :8001 + WebSocket :8002), SmartThin
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol, TypeVar
 
@@ -36,7 +38,9 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 
 POLL_S = 1.0
-WOL_WAIT_S = 15.0
+WOL_WAIT_S = 15.0  # espera pela TV após o Wake-on-LAN
+POWER_DEADLINE_S = 20.0  # teto da operação de energia inteira, retry incluso (CLI: 30 s)
+POWER_POLL_CAP_S = 1.5  # teto de cada leitura de PowerState (o REST fora da rede leva ~5 s)
 INPUT_CONFIRM_S = 5.0
 PICTURE_CONFIRM_S = 5.0
 HOLD_POWER_S = 3.0
@@ -94,6 +98,14 @@ def _hdmi_port(source: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
+@dataclass
+class _PowerOp:
+    """Estado de uma operação de energia; sobrevive à repetição do _run."""
+
+    deadline: float
+    woke: bool = False  # WOL já enviado
+
+
 class TVService:
     def __init__(
         self,
@@ -107,6 +119,7 @@ class TVService:
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         load: Callable[[], Config] = load_config,
         stamp: Callable[[], object] = config_stamp,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._config = config
         self._local_factory = local_factory
@@ -118,6 +131,7 @@ class TVService:
         self._now = now
         self._load = load
         self._stamp = stamp
+        self._clock = clock
         self._seen_stamp = stamp()  # config já lido na partida
         self._local = local_factory(config.tv_host or "", config.ws_token, self._on_token)
         self._st: SmartThings | None = None
@@ -188,17 +202,27 @@ class TVService:
         await self._apply(*await self._find())
         return True
 
-    async def _run(self, op: Callable[[], Awaitable[T]]) -> T:
-        """Roda op; em TVUnreachable redescobre uma vez e repete se o IP mudou."""
+    async def _run(
+        self, op: Callable[[], Awaitable[T]], remaining: Callable[[], float] | None = None
+    ) -> T:
+        """Roda op; em TVUnreachable redescobre uma vez e repete se o IP mudou.
+
+        ``remaining`` (segundos até o prazo da operação) limita a redescoberta: sem
+        tempo restante não redescobre, e a busca não pode passar do prazo.
+        """
         discovered = await self._ensure_host()
         try:
             return await op()
         except TVUnreachable as exc:
             if discovered:
                 raise
+            budget = remaining() if remaining is not None else None
+            if budget is not None and budget <= 0:
+                raise
             try:
-                cand, mac = await self._find()
-            except TVNotFound:
+                async with asyncio.timeout(budget):
+                    cand, mac = await self._find()
+            except (TVNotFound, TimeoutError):
                 raise exc from None
             if cand.host == self._config.tv_host:
                 raise
@@ -247,35 +271,51 @@ class TVService:
 
     # -- teclas, apps, estado ------------------------------------------------
 
-    async def _power(self, woke: list[bool]) -> str:
+    async def _probe_power(self, op: _PowerOp) -> str | None:
+        """PowerState com teto curto (e nunca além do prazo); lentidão vira None."""
+        cap = min(POWER_POLL_CAP_S, max(op.deadline - self._clock(), 0.1))
+        try:
+            async with asyncio.timeout(cap):
+                return await self._local.power_state()
+        except TimeoutError:
+            return None
+
+    async def _power(self, op: _PowerOp) -> str:
         """Liga por WOL ou desliga segurando KEY_POWER.
 
-        ``woke`` sobrevive à repetição do _run: se o WOL já foi enviado nesta
+        ``op`` sobrevive à repetição do _run: se o WOL já foi enviado nesta
         operação (ex.: o IP mudou e a redescoberta achou a TV ligando no IP novo),
-        a TV ligada é resultado do WOL e não pode ser desligada.
+        a TV ligada é resultado do WOL e não pode ser desligada, e a espera
+        continua só até o prazo total (sem novo WOL nem nova espera cheia).
         """
-        if await self._local.power_state() == "on":
-            if woke[0]:
+        if await self._probe_power(op) == "on":
+            if op.woke:
                 return "wol"
             # Na Frame um toque curto entra no Modo Arte; segurar 3 s desliga.
             await self._local.hold("KEY_POWER", HOLD_POWER_S)
             return "remote"
-        mac = self._config.tv_mac
-        if not mac:
-            raise TVUnreachable(_NO_MAC_MSG)
-        await self._wol(mac)
-        woke[0] = True
-        for _ in range(round(WOL_WAIT_S / POLL_S)):
+        if op.woke:
+            wait_until = op.deadline
+        else:
+            mac = self._config.tv_mac
+            if not mac:
+                raise TVUnreachable(_NO_MAC_MSG)
+            await self._wol(mac)
+            op.woke = True
+            wait_until = min(self._clock() + WOL_WAIT_S, op.deadline)
+        while self._clock() < wait_until:
             await self._sleep(POLL_S)
-            if await self._local.power_state() == "on":
+            if await self._probe_power(op) == "on":
                 return "wol"
         raise TVUnreachable(_WOL_TIMEOUT_MSG)
 
     async def send_key(self, name: str) -> str:
         key = samsung_key(name)
         if key == "KEY_POWER":
-            woke = [False]
-            return await self._run(lambda: self._power(woke))
+            op = _PowerOp(deadline=self._clock() + POWER_DEADLINE_S)
+            return await self._run(
+                lambda: self._power(op), remaining=lambda: op.deadline - self._clock()
+            )
 
         async def op() -> str:
             await self._local.key(key)

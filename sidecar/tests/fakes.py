@@ -271,6 +271,7 @@ class Harness:
         self.sleeps: list[float] = []
         self.saved: list[Config] = []
         self.finder_calls: list[str | None] = []
+        self.finder_hook = None
         self.finder_result: tuple[TVCandidate, str | None] | BaseException = (
             TVCandidate("10.0.0.5", "[TV] Frame"),
             MAC,
@@ -291,6 +292,7 @@ class Harness:
             now=lambda: NOW,
             load=lambda: Config(**vars(self.disk)),
             stamp=lambda: self.disk_stamp,
+            clock=lambda: self.clock_now,
         )
 
     def save(self, cfg):
@@ -329,6 +331,8 @@ class Harness:
     async def finder(self, mac, get_mac):
         self.finder_calls.append(mac)
         self.get_mac = get_mac
+        if self.finder_hook is not None:
+            await self.finder_hook()
         if isinstance(self.finder_result, BaseException):
             raise self.finder_result
         return self.finder_result

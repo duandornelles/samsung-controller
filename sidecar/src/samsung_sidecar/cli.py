@@ -17,6 +17,7 @@ DEFAULT_URL = "http://127.0.0.1:8766"
 TIMEOUT = 30.0
 HINT_DOWN = "Sidecar não está rodando. Inicie com: uv run samsung-sidecar"
 HINT_PAIR = "Aceite o pedido de conexão ('Permitir') na tela da TV"
+HINT_TIMEOUT = "O sidecar não respondeu a tempo (a TV pode estar demorando); tente de novo"
 
 
 class _ApiError(Exception):
@@ -93,6 +94,8 @@ def _smartthings(token: str, transport: httpx.AsyncBaseTransport | None) -> None
             chosen = tvs[int(input("Índice da TV: ").strip())]
         except (ValueError, IndexError):
             raise _ApiError("invalid_choice", "Índice inválido") from None
+        except EOFError:
+            raise _ApiError("invalid_choice", "Índice não informado") from None
     cfg = load_config()
     cfg.st_token = token
     cfg.st_device_id = str(chosen["deviceId"])
@@ -147,6 +150,12 @@ def main(
         return 1
     except httpx.ConnectError:
         print(HINT_DOWN, file=sys.stderr)
+        return 1
+    except httpx.TimeoutException:
+        print(HINT_TIMEOUT, file=sys.stderr)
+        return 1
+    except httpx.HTTPError as e:
+        print(f"Erro na comunicação com o sidecar: {e}", file=sys.stderr)
         return 1
     finally:
         if own:

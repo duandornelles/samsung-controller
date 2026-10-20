@@ -500,3 +500,71 @@ async def test_real_disk_cli_write_then_sidecar_save(home):
     svc._on_token("tok2")
     disk = load_config()
     assert (disk.st_token, disk.st_device_id, disk.ws_token) == ("pat", "dev", "tok2")
+
+
+# -- I3: ligar pela rede tem prazo total ---------------------------------------
+
+
+async def _hang():
+    import asyncio
+
+    await asyncio.Event().wait()
+
+
+async def test_power_hanging_probe_bounded_by_deadline(monkeypatch):
+    import asyncio
+    import time
+
+    from samsung_sidecar import service
+
+    monkeypatch.setattr(service, "POWER_POLL_CAP_S", 0.01)
+    h = Harness()
+    h.local.power_hook = _hang  # REST da TV nunca responde
+    h.finder_result = (TVCandidate("10.0.0.9", "[TV] Frame"), MAC)
+    t0 = time.monotonic()
+    with pytest.raises(TVUnreachable):
+        await asyncio.wait_for(h.svc.send_key("power"), 5)
+    assert time.monotonic() - t0 < 3
+    assert h.clock_now <= service.POWER_DEADLINE_S
+    assert sum(h.sleeps) <= service.POWER_DEADLINE_S
+    assert h.wol_calls == [MAC]  # o retry no IP novo não reenvia nem dobra a espera
+
+
+async def test_power_retry_after_wol_shares_deadline():
+    from samsung_sidecar import service
+
+    h = Harness()
+    h.local.powers = ["standby"]
+    h.finder_result = (TVCandidate("10.0.0.9", "[TV] Frame"), MAC)
+    with pytest.raises(TVUnreachable):
+        await h.svc.send_key("power")
+    assert h.finder_calls == [MAC]
+    assert h.wol_calls == [MAC]
+    assert sum(h.sleeps) <= service.POWER_DEADLINE_S
+
+
+async def test_power_no_rediscovery_after_deadline(monkeypatch):
+    from samsung_sidecar import service
+
+    monkeypatch.setattr(service, "POWER_DEADLINE_S", 10.0)
+    h = Harness()
+    h.local.powers = ["standby"]
+    h.finder_result = (TVCandidate("10.0.0.9", "[TV] Frame"), MAC)
+    with pytest.raises(TVUnreachable):
+        await h.svc.send_key("power")
+    assert h.finder_calls == []
+    assert sum(h.sleeps) == 10.0
+
+
+async def test_power_rediscovery_capped_by_remaining_time(monkeypatch):
+    import asyncio
+
+    from samsung_sidecar import service
+
+    monkeypatch.setattr(service, "POWER_DEADLINE_S", service.WOL_WAIT_S + 0.05)
+    h = Harness()
+    h.local.powers = ["standby"]
+    h.finder_hook = _hang
+    with pytest.raises(TVUnreachable):
+        await asyncio.wait_for(h.svc.send_key("power"), 2)
+    assert h.finder_calls == [MAC]

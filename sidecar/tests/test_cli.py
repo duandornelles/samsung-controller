@@ -136,3 +136,33 @@ def test_smartthings_token_invalido(home, capsys):
     assert "inválido" in out.err
     assert TOKEN not in out.out + out.err
     assert load_config().st_token is None
+
+
+def test_timeout_mensagem_limpa(capsys):
+    def handler(req):
+        raise httpx.ReadTimeout("x")
+
+    assert cli.main(["key", "power"], client=make_client(handler)) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "não respondeu" in err
+
+
+def test_erro_http_generico_mensagem_limpa(capsys):
+    def handler(req):
+        raise httpx.RemoteProtocolError("conexão encerrada")
+
+    assert cli.main(["state"], client=make_client(handler)) == 1
+    assert "sidecar" in capsys.readouterr().err
+
+
+def test_smartthings_eof_no_indice(home, monkeypatch, capsys):
+    items = {"items": [{"deviceId": "a", "name": "Samsung TV"}, {"deviceId": "b", "label": "Frame"}]}
+
+    def eof(_=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    assert cli.main(["smartthings", TOKEN], st_transport=st_transport(items)) == 1
+    out = capsys.readouterr()
+    assert "Índice" in out.err and TOKEN not in out.out + out.err
+    assert load_config().st_token is None
