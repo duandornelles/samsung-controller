@@ -27,7 +27,7 @@ _UNAUTHORIZED_MSG = "Token SmartThings inválido"
 _FORBIDDEN_MSG = "Token SmartThings sem permissão ou inválido"
 _NOT_FOUND_MSG = "Dispositivo SmartThings não encontrado"
 _UNREACHABLE_MSG = "SmartThings inacessível"
-_NO_BACKLIGHT_MSG = "Brilho não disponível nesta TV"
+NO_BACKLIGHT_MSG = "Brilho não disponível nesta TV"
 
 
 def picture_label(value: str) -> str:
@@ -182,11 +182,11 @@ class SmartThingsChannel:
     async def set_backlight(self, v: int) -> None:
         cap_id = await self._find_brightness_cap()
         if cap_id is None:
-            raise NotSupported(_NO_BACKLIGHT_MSG)
+            raise NotSupported(NO_BACKLIGHT_MSG)
         cap = self._main(await self.status()).get(cap_id, {})
         found = self._numeric_attr(cap)
         if found is None:
-            raise NotSupported(_NO_BACKLIGHT_MSG)
+            raise NotSupported(NO_BACKLIGHT_MSG)
         attr = found[0]
         await self.command(cap_id, f"set{attr[:1].upper()}{attr[1:]}", [v])
 

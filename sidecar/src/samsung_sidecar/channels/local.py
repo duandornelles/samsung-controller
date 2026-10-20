@@ -271,6 +271,14 @@ class LocalChannel:
         async with self._lock:
             await self._send_locked(list(commands))
 
+    async def connect(self) -> None:
+        """Abre o WebSocket sem enviar nada (sem token: aguarda o "Permitir" na TV)."""
+        async with self._lock:
+            if self.connected:
+                return
+            await self._drop_remote()
+            await self._connect_locked()
+
     async def key(self, samsung_key: str) -> None:
         await self._send(SendRemoteKey.click(samsung_key))
 

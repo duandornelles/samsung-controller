@@ -347,3 +347,20 @@ async def test_real_remote_token_flow_and_key(monkeypatch):
     assert ch.connected
     await ch.close()
     assert conn.closed and not ch.connected
+
+
+async def test_connect_opens_once_without_sending_and_saves_token():
+    ch, _, ws, tokens = make(token=None, ws=FakeWsFactory(issue_token="abc"))
+    await ch.connect()
+    await ch.connect()  # já conectado: não reabre
+    assert ch.connected and ws.open_calls == 1
+    assert tokens == ["abc"] and ws.sent == []
+
+
+async def test_connect_unreachable():
+    ws = FakeWsFactory()
+    ws.open_errors.append(OSError("refused"))
+    ch, _, _, _ = make(ws=ws)
+    with pytest.raises(TVUnreachable):
+        await ch.connect()
+    assert not ch.connected
