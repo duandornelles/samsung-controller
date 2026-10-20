@@ -53,18 +53,24 @@ TV em espera:
 Tipos: `power` `"on"`/`"standby"`/`null` (`null` = TV ainda não descoberta); `app` string ou `null`;
 `volume` objeto `{level:int, max:int, muted:bool}` ou `null`; `channels` como em `/health`; `adb_auth` string ou `null`.
 
+**Sentinela `app == "com.tcl.tv"`** (decisão R4): o app depende desse valor para saber que "a TV está mostrando uma
+fonte de entrada (HDMI)". O sidecar Samsung devolve exatamente `"com.tcl.tv"` quando o SmartThings informa uma
+entrada `HDMIn` como fonte ativa; sem SmartThings, em espera ou fora de HDMI, `app` é `null`. Não é um id de app real.
+
 ### POST /pair/start
 Sem corpo. Timeout: 30 s. Resposta 200: `{"ok":true}`.
 Erros: `tv_not_found` (503), `tv_unreachable` (503), `not_supported` (501), `adb_unauthorized` (409).
 
 ### POST /pair/finish
 Corpo: `{"pin":"<string>"}`. Timeout: 30 s. Resposta 200: `{"ok":true}`.
+No Samsung o PIN não existe: **qualquer PIN é aceito** (o valor é ignorado) e basta já haver token salvo pelo
+`/pair/start` (senão `not_paired`). O corpo continua obrigatório pelo contrato.
 Erros: `invalid_pin` (400), `not_paired` (409), `tv_unreachable` (503), `invalid_request` (422, sem `pin`).
 
 ### POST /key/{name}
 Sem corpo. Timeout: 30 s. Nomes válidos: `power, home, back, up, down, left, right, ok, volume_up, volume_down,
 mute, play_pause, menu, settings`. Resposta 200: `{"ok":true,"channel":"remote"}` (o app lê só `channel`;
-no TCL é `"remote"` ou `"adb"`; no Samsung é `"remote"`, ou `"wol"` no `power` que liga a TV).
+no TCL é `"remote"` ou `"adb"`; no Samsung é `"remote"`, ou `"wol"` no `power` que liga a TV pela rede (Wake-on-LAN)).
 Erros: `unknown_key` (404), `not_paired` (409), `adb_unauthorized` (409), `tv_unreachable` (503), `tv_not_found` (503).
 
 ### POST /app
