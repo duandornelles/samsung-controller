@@ -1,0 +1,33 @@
+[project]
+name = "samsung-sidecar"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "duandornelles", email = "duandu19@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.156.1",
+    "httpx>=0.28.1",
+    "samsungtvws[async]>=3.0.6",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[project.scripts]
+tcl-sidecar = "samsung_sidecar.api:main"
+samsung-sidecar = "samsung_sidecar.api:main"
+samsung = "samsung_sidecar.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
