@@ -44,7 +44,11 @@ O bundle é assinado ad hoc e não aparece no Dock (`LSUIElement`).
 - Só um módulo fica expandido por vez.
 - Com o menu aberto: setas = D-pad, Enter = OK, Esc = recolhe o módulo expandido ou, se
   nenhum estiver aberto, voltar.
-- **Ajustes**: pareamento (PIN), **Entradas** (nome, símbolo e "Ocultar" de cada porta;
+- **Ligar**: no v1 o app não liga a TV a partir da espera (em "Em espera" os controles ficam
+  desabilitados). Ligue pelo controle físico ou pela rede com `uv run samsung key power` (Wake-on-LAN),
+  na pasta do sidecar.
+- **Ajustes**: pareamento (a Samsung não usa PIN: aceite "Permitir" na TV e digite quaisquer 6
+  letras ou números no campo de PIN ou apenas feche os Ajustes), **Entradas** (nome, símbolo e "Ocultar" de cada porta;
   padrão "HDMI N" com símbolo de cabo, nenhuma oculta), atalhos (adicionar/remover/reordenar) e
   pasta do sidecar (padrão `~/Documents/Projetos/Samsung-controller/sidecar`).
 - Log do sidecar: `~/Library/Logs/Samsung-controller/sidecar.log` (botão **Abrir log**).
@@ -65,8 +69,10 @@ uma mudança de código além da configuração. Só mudaram estes valores:
 - Este README (textos de marca, porta e caminhos).
 
 Permanece (lógica, não configuração): a comparação com o pacote Android `com.tcl.tv` em
-`TVStore.swift`/`MenuView.swift` (nunca casa numa Samsung, que reporta `app: null`) e o comando
-`uv run tcl-sidecar` (o sidecar Samsung expõe também o script `tcl-sidecar`).
+`TVStore.swift`/`MenuView.swift`, que o app usa como sentinela de "a TV está numa entrada" (decisão R4:
+o sidecar Samsung devolve `app = "com.tcl.tv"` quando o SmartThings informa uma entrada HDMI ativa, e
+`null` nos demais casos), e o comando `uv run tcl-sidecar` (o sidecar Samsung expõe também o script
+`tcl-sidecar`). Também é herdado o texto "ligue pelo controle físico" do estado "Em espera".
 
 O histórico de validação abaixo é da TV TCL e fica apenas como referência.
 

@@ -139,4 +139,8 @@ Erros do cliente (sem resposta HTTP): `notRunning` ("Sidecar não está responde
 - O app faz poll de `/state` e `/inputs` enquanto o menu está aberto; `/picture?cached=1` mostra o último modo.
 - Trocar de entrada invalida o cache de imagem (`/picture?cached=1` passa a dar `no_cache` até nova leitura).
 - Com a TV em espera, `/state` responde 200 com `power:"standby"` (nunca erro).
+- Ligar a partir da espera (decisão R8): no v1 o app desabilita os controles em "Em espera" e não envia
+  `POST /key/power` (o texto "ligue pelo controle físico" é herdado do app TCL). O sidecar liga pela rede
+  (Wake-on-LAN, `channel:"wol"`) quando recebe `power` com a TV em espera, ex.: `uv run samsung key power`.
+  A operação de energia tem prazo total de ~20 s e pedidos simultâneos são atendidos um por vez.
 - Redescoberta: no máximo uma por comando quando há `tv_unreachable`, exceto em `/inputs` (somente leitura).
