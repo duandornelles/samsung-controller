@@ -601,3 +601,30 @@ async def test_power_off_retry_still_on_holds_again():
     assert await h.svc.send_key("power") == "remote"
     assert h.local.calls.count(("hold", "KEY_POWER", 3.0)) == 2
     assert h.wol_calls == []
+
+
+# -- M6: energia serializada ---------------------------------------------------
+
+
+async def test_concurrent_power_presses_hold_once():
+    import asyncio
+
+    h = Harness()
+    loc = h.local
+
+    async def yield_():
+        await asyncio.sleep(0)
+
+    loc.power_hook = yield_  # sem lock, as duas leituras veriam "on"
+    real_hold = loc.hold
+
+    async def hold(k, s):
+        await real_hold(k, s)
+        await asyncio.sleep(0)
+        loc.powers = ["standby", "on"]  # a TV desligou; o 2º toque vê o estado novo
+
+    loc.hold = hold
+    results = await asyncio.gather(h.svc.send_key("power"), h.svc.send_key("power"))
+    assert loc.calls.count(("hold", "KEY_POWER", 3.0)) == 1
+    # O 2º pedido releu o estado depois do 1º: TV em standby -> WOL.
+    assert results == ["remote", "wol"] and h.wol_calls == [MAC]

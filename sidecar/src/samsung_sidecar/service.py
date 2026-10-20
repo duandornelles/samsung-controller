@@ -139,6 +139,7 @@ class TVService:
         self._st_key: tuple[str, str] | None = None
         self._st_ok: bool | None = None  # None = nenhuma chamada ainda
         self._picture_lock = asyncio.Lock()
+        self._power_lock = asyncio.Lock()
         self._picture_cache: dict[str, Any] | None = None
 
     # -- persistência / descoberta -------------------------------------------
@@ -317,10 +318,13 @@ class TVService:
     async def send_key(self, name: str) -> str:
         key = samsung_key(name)
         if key == "KEY_POWER":
-            op = _PowerOp(deadline=self._clock() + POWER_DEADLINE_S)
-            return await self._run(
-                lambda: self._power(op), remaining=lambda: op.deadline - self._clock()
-            )
+            # Um pedido de energia por vez; o PowerState é lido (em _power) só depois
+            # de obter o lock, então o 2º toque age sobre o estado deixado pelo 1º.
+            async with self._power_lock:
+                op = _PowerOp(deadline=self._clock() + POWER_DEADLINE_S)
+                return await self._run(
+                    lambda: self._power(op), remaining=lambda: op.deadline - self._clock()
+                )
 
         async def op() -> str:
             await self._local.key(key)
